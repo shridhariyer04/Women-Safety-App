@@ -1,4 +1,25 @@
 {
-  "name": "women-safety-app",
-  "slug": "women-safety-app"
+  "expo": {
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location."
+        }
+      ]
+    ],
+    "android": {
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "SEND_SMS"
+      ]
+    },
+    "ios": {
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "This app needs access to location to track your route.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs access to location to track your route even when in background."
+      }
+    }
+  }
 }
