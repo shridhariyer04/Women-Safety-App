@@ -12,7 +12,8 @@
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
-        "SEND_SMS"
+        "SEND_SMS",
+        "RECORD_AUDIO"
       ]
     },
     "ios": {
