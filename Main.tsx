@@ -12,6 +12,7 @@ import MapView, { Marker, Polyline, Circle } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as SMS from 'expo-sms';
 import * as Notifications from 'expo-notifications';
+import { WebView } from 'react-native-webview'; // Correct import
 import { distance } from '@turf/turf';
 import { StatusBar } from 'expo-status-bar';
 import { getEmergencyContacts, EmergencyContact } from './src/services/SupabaseService';
@@ -33,13 +34,43 @@ interface MainAppProps {
   navigation: { navigate: (screen: string) => void };
 }
 
-// Constants
+const MAPBOX_API_KEY = 'pk.eyJ1Ijoic2hyZWVwYXdhbiIsImEiOiJjbHR4M2RlOWIwMXN2MmtwajMyaGxncnIxIn0.7tHp71unIQLe0cs_Azj4eQ';
 const ROUTE_DEVIATION_THRESHOLD = 500; // 500 meters
-const RESPONSE_TIMEOUT = 30000; // 30 seconds in milliseconds
-const NOTIFICATION_COOLDOWN = 60000; // 1 minute between notifications
+const RESPONSE_TIMEOUT = 30000; // 30 secs
+const NOTIFICATION_COOLDOWN = 60000; // 1 min
+
+const speechRecognitionHtml = `
+  <!DOCTYPE html>
+  <html>
+  <body>
+    <script>
+      const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event) => {
+        const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase();
+        if (transcript.includes('help') || transcript.includes('save me')) {
+          window.ReactNativeWebView.postMessage('trigger:' + transcript);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+      };
+
+      recognition.onend = () => {
+        recognition.start(); // Keep it running
+      };
+
+      recognition.start();
+    </script>
+  </body>
+  </html>
+`;
 
 const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
-  // State declarations
   const [location, setLocation] = useState<Coordinates | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [destination, setDestination] = useState<LocationState>({ coordinates: null, address: '' });
@@ -49,7 +80,6 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [voiceServiceActive, setVoiceServiceActive] = useState<boolean>(false);
 
-  // Refs
   const mapRef = useRef<MapView | null>(null);
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
   const responseTimer = useRef<NodeJS.Timeout | null>(null);
@@ -58,25 +88,51 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
   const lastNotificationTime = useRef<number>(0);
   const voiceServiceRef = useRef<VoiceService | null>(null);
 
+  const fetchMapboxRoute = async (start: Coordinates, end: Coordinates) => {
+    try {
+      const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${start.longitude},${start.latitude};${end.longitude},${end.latitude}?geometries=geojson&access_token=${MAPBOX_API_KEY}`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.routes && data.routes.length > 0) {
+        const coords = data.routes[0].geometry.coordinates.map(([longitude, latitude]: [number, number]) => ({
+          latitude,
+          longitude,
+        }));
+        setRouteCoordinates(coords);
+        return coords;
+      }
+      throw new Error('No route found, bro!');
+    } catch (error) {
+      console.error('Mapbox route error:', error);
+      setErrorMsg('Route fetch failed—check your connection!');
+      return null;
+    }
+  };
+
+  const setupVoiceService = (contacts: EmergencyContact[]) => {
+    voiceServiceRef.current = new VoiceService(contacts);
+  };
+
   useEffect(() => {
     const initializeApp = async () => {
       await configureNotifications();
       await requestPermissions();
       await startLocationTracking();
-      await loadEmergencyContacts();
+      const contacts = await loadEmergencyContacts();
+      setupVoiceService(contacts);
     };
 
     initializeApp().catch((error) => {
-      console.error('Initialization error:', error);
-      setErrorMsg('Failed to initialize app');
+      console.error('Init went boom:', error);
+      setErrorMsg('App startup failed—let’s retry!');
     });
 
-    // Notification listeners
-    notificationListener.current = Notifications.addNotificationReceivedListener(notification => {
-      console.log('Notification received:', notification);
+    notificationListener.current = Notifications.addNotificationReceivedListener((notification) => {
+      console.log('Notification dropped:', notification);
     });
 
-    responseListener.current = Notifications.addNotificationResponseReceivedListener(async response => {
+    responseListener.current = Notifications.addNotificationResponseReceivedListener(async (response) => {
       const actionId = response.actionIdentifier;
       const currentLocation = location;
 
@@ -85,38 +141,26 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
         responseTimer.current = null;
       }
 
-      if (actionId === 'SEND_ALERT') {
-        if (currentLocation) {
-          await sendEmergencyAlert(currentLocation);
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: '🚨 Alert Sent',
-              body: 'Emergency alert has been sent to your contacts.',
-            },
-            trigger: null,
-          });
-        }
+      if (actionId === 'SEND_ALERT' && currentLocation) {
+        await sendEmergencyAlert(currentLocation);
+        await Notifications.scheduleNotificationAsync({
+          content: { title: '🚨 Alert Sent', body: 'Your squad’s got your back!' },
+          trigger: null,
+        });
       } else if (actionId === 'IM_SAFE') {
         await Notifications.scheduleNotificationAsync({
-          content: {
-            title: '✅ Status Updated',
-            body: 'Glad you are safe! Route monitoring continues.',
-          },
+          content: { title: '✅ Chill Vibes', body: 'Good to know you’re safe, fam!' },
           trigger: null,
         });
       }
     });
 
     return () => {
-      // Stop voice service when component unmounts
-      voiceServiceRef.current?.stopListening();
-      
+      if (voiceServiceRef.current) voiceServiceRef.current.stopListening();
       if (locationSubscription.current) locationSubscription.current.remove();
       if (responseTimer.current) clearTimeout(responseTimer.current);
-      if (notificationListener.current) 
-        Notifications.removeNotificationSubscription(notificationListener.current);
-      if (responseListener.current) 
-        Notifications.removeNotificationSubscription(responseListener.current);
+      if (notificationListener.current) Notifications.removeNotificationSubscription(notificationListener.current);
+      if (responseListener.current) Notifications.removeNotificationSubscription(responseListener.current);
     };
   }, []);
 
@@ -142,16 +186,8 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
     }
 
     await Notifications.setNotificationCategoryAsync('route-deviation', [
-      {
-        identifier: 'SEND_ALERT',
-        buttonTitle: 'Send Alert',
-        options: { isDestructive: true, isAuthenticationRequired: false },
-      },
-      {
-        identifier: 'IM_SAFE',
-        buttonTitle: "I'm Safe",
-        options: { isDestructive: false, isAuthenticationRequired: false },
-      },
+      { identifier: 'SEND_ALERT', buttonTitle: 'Send Alert', options: { isDestructive: true } },
+      { identifier: 'IM_SAFE', buttonTitle: "I'm Safe", options: { isDestructive: false } },
     ]);
   };
 
@@ -159,29 +195,21 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
     try {
       const { status: locStatus } = await Location.requestForegroundPermissionsAsync();
       if (locStatus !== 'granted') {
-        setErrorMsg('Location permission denied');
+        setErrorMsg('Location permission denied—can’t track without it!');
         return false;
       }
 
       if (Platform.OS === 'android') {
-        const micStatus = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-          { 
-            title: 'Microphone Permission', 
-            message: 'App needs microphone access', 
-            buttonPositive: 'OK' 
-          }
-        );
+        const micStatus = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
         if (micStatus !== PermissionsAndroid.RESULTS.GRANTED) {
-          setErrorMsg('Microphone permission denied');
+          setErrorMsg('Mic permission denied—voice feature’s toast!');
           return false;
         }
       }
-
       return true;
     } catch (error) {
-      console.error('Permission request error:', error);
-      setErrorMsg('Failed to request permissions');
+      console.error('Permission request blew up:', error);
+      setErrorMsg('Permissions failed—check your settings!');
       return false;
     }
   };
@@ -191,29 +219,10 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
       setIsLoading(true);
       const contacts = await getEmergencyContacts();
       setEmergencyContacts(contacts);
-      
-      // Initialize VoiceService with emergency contacts
-      voiceServiceRef.current = new VoiceService(contacts);
-      
-      if (contacts.length > 0) {
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: '✅ Contacts Loaded',
-            body: `Successfully loaded ${contacts.length} emergency contacts`,
-          },
-          trigger: null,
-        });
-      } else {
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: '⚠️ No Contacts',
-            body: 'No emergency contacts found. Please add contacts for safety alerts.',
-          },
-          trigger: null,
-        });
-      }
+      return contacts;
     } catch (error) {
-      console.error('Error loading emergency contacts:', error);
+      console.error('Contacts load failed:', error);
+      return [];
     } finally {
       setIsLoading(false);
     }
@@ -224,7 +233,6 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
       const initialLocation = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.BestForNavigation,
       });
-
       const initialCoords: Coordinates = {
         latitude: initialLocation.coords.latitude,
         longitude: initialLocation.coords.longitude,
@@ -235,72 +243,55 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
       setRouteCoordinates([initialCoords]);
 
       locationSubscription.current = await Location.watchPositionAsync(
-        { 
-          accuracy: Location.Accuracy.BestForNavigation, 
-          timeInterval: 5000, 
-          distanceInterval: 5 
-        },
+        { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 5000, distanceInterval: 5 },
         (newLocation) => {
           const newCoords: Coordinates = {
             latitude: newLocation.coords.latitude,
             longitude: newLocation.coords.longitude,
             accuracy: newLocation.coords.accuracy,
           };
-          
           setLocation(newCoords);
           setRouteCoordinates((prev) => [...prev, newCoords]);
-          
-          if (destination.coordinates) {
-            checkRouteDeviation(newCoords);
-          }
+          if (destination.coordinates) checkRouteDeviation(newCoords);
         }
       );
     } catch (error) {
-      console.error('Location tracking error:', error);
-      setErrorMsg('Failed to start location tracking');
+      console.error('Location tracking crashed:', error);
+      setErrorMsg('Can’t track location—retry time!');
     }
   };
 
-  const sendEmergencyAlert = async (currentLocation: Coordinates): Promise<void> => {
+  const sendEmergencyAlert = async (currentLocation: Coordinates, audioUrl?: string): Promise<void> => {
     if (emergencyContacts.length === 0) {
       await Notifications.scheduleNotificationAsync({
-        content: {
-          title: '⚠️ Alert Failed',
-          body: 'No emergency contacts available',
-        },
+        content: { title: '⚠️ No Squad', body: 'Add some emergency contacts, bro!' },
         trigger: null,
       });
       return;
     }
 
     try {
-      const destinationName = destination.address || 'unknown location';
-      const message = `EMERGENCY: ${initialUsername} may be in danger near ${destinationName}. Location: https://www.openstreetmap.org/?mlat=${currentLocation.latitude}&mlon=${currentLocation.longitude}`;
-      
+      const destinationName = destination.address || 'unknown spot';
+      const message = `EMERGENCY: ${initialUsername} might be in trouble near ${destinationName}. Location: https://www.openstreetmap.org/?mlat=${currentLocation.latitude}&mlon=${currentLocation.longitude}${audioUrl ? ` - Voice clip: ${audioUrl}` : ''}`;
+
+      const phoneNumbers = emergencyContacts.map((contact) => contact.phone_number);
       const isAvailable = await SMS.isAvailableAsync();
       if (isAvailable) {
-        const phoneNumbers = emergencyContacts.map(contact => contact.phone_number);
         const { result } = await SMS.sendSMSAsync(phoneNumbers, message);
-
         await Notifications.scheduleNotificationAsync({
           content: {
-            title: result === 'sent' ? '✅ Alert Sent' : '⚠️ Alert Status',
-            body: result === 'sent'
-              ? `Emergency alert sent to ${emergencyContacts.length} contacts`
-              : 'Message preparation failed',
+            title: result === 'sent' ? '✅ Alert Dropped' : '⚠️ Alert Glitch',
+            body: result === 'sent' ? `Hit up ${emergencyContacts.length} contacts—help’s on the way!` : 'SMS didn’t fly—check it!',
           },
           trigger: null,
         });
       } else {
-        throw new Error('SMS is not available');
+        throw new Error('SMS ain’t working, bro!');
       }
     } catch (error) {
-      console.error('Error sending SMS:', error);
+      console.error('Alert send failed:', error);
       await Notifications.scheduleNotificationAsync({
-        content: {
-          title: '❌ Alert Failed',
-          body: 'Failed to send emergency alert',
-        },
+        content: { title: '❌ Alert Crashed', body: 'Emergency alert didn’t send—retry!' },
         trigger: null,
       });
     }
@@ -308,14 +299,12 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
 
   const showDeviationNotification = async (currentLocation: Coordinates) => {
     try {
-      if (responseTimer.current) {
-        clearTimeout(responseTimer.current);
-      }
+      if (responseTimer.current) clearTimeout(responseTimer.current);
 
       await Notifications.scheduleNotificationAsync({
         content: {
-          title: '❗ Route Deviation Detected',
-          body: 'Are you safe? Please respond within 30 seconds.',
+          title: '❗ Off the Path!',
+          body: 'You good, fam? Hit us back in 30 secs!',
           data: { currentLocation },
           categoryIdentifier: 'route-deviation',
           sound: 'default',
@@ -327,16 +316,13 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
         if (responseTimer.current) {
           await sendEmergencyAlert(currentLocation);
           await Notifications.scheduleNotificationAsync({
-            content: {
-              title: '🚨 Automatic Alert Sent',
-              body: 'No response received. Emergency contacts notified.',
-            },
+            content: { title: '🚨 Auto-Alert', body: 'No reply—squad’s been pinged!' },
             trigger: null,
           });
         }
       }, RESPONSE_TIMEOUT);
     } catch (error) {
-      console.error('Deviation notification error:', error);
+      console.error('Deviation alert failed:', error);
       await sendEmergencyAlert(currentLocation);
     }
   };
@@ -350,7 +336,7 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
     const deviationDistance = distance(
       [currentLocation.longitude, currentLocation.latitude],
       [destination.coordinates.longitude, destination.coordinates.latitude]
-    ) * 1000; // Convert to meters
+    ) * 1000;
 
     if (deviationDistance > ROUTE_DEVIATION_THRESHOLD) {
       lastNotificationTime.current = now;
@@ -360,88 +346,60 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
 
   const simulateDeviation = (): void => {
     if (!location) return;
-
     const deviatedLocation: Coordinates = {
-      latitude: location.latitude + (600 / 111320), // Approximately 600 meters north
+      latitude: location.latitude + 600 / 111320,
       longitude: location.longitude,
-      accuracy: location.accuracy
+      accuracy: location.accuracy,
     };
-
     setLocation(deviatedLocation);
-    setRouteCoordinates(prev => [...prev, deviatedLocation]);
-    
-    if (destination.coordinates) {
-      checkRouteDeviation(deviatedLocation);
-    }
+    setRouteCoordinates((prev) => [...prev, deviatedLocation]);
+    if (destination.coordinates) checkRouteDeviation(deviatedLocation);
   };
 
   const geocodeDestination = async (address: string): Promise<Coordinates | null> => {
     try {
       const results = await Location.geocodeAsync(address);
       if (results.length > 0) {
-        return { 
-          latitude: results[0].latitude, 
-          longitude: results[0].longitude 
-        };
+        return { latitude: results[0].latitude, longitude: results[0].longitude };
       }
-      setErrorMsg('Could not find destination');
+      setErrorMsg('Destination not found—try again!');
       return null;
     } catch (error) {
-      console.error('Geocoding error:', error);
-      setErrorMsg('Failed to geocode destination');
+      console.error('Geocoding bombed:', error);
+      setErrorMsg('Geocoding failed—check your input!');
       return null;
     }
   };
 
   const handleSetDestination = async () => {
     if (!destinationInput.trim()) {
-      setErrorMsg('Please enter a destination');
+      setErrorMsg('Yo, drop a destination first!');
       return;
     }
 
     const coords = await geocodeDestination(destinationInput);
-    if (coords) {
+    if (coords && location) {
       setDestination({ coordinates: coords, address: destinationInput });
-      
-      // Start voice listening when destination is set
-      if (voiceServiceRef.current) {
-        try {
-          await voiceServiceRef.current.startListening();
-          setVoiceServiceActive(true);
-          
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: '🎙️ Voice Safety Active',
-              body: 'Voice safety monitoring is now active',
-            },
-            trigger: null,
-          });
-        } catch (error) {
-          console.error('Failed to start voice service:', error);
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: '⚠️ Voice Safety Failed',
-              body: 'Could not activate voice safety feature',
-            },
-            trigger: null,
-          });
-        }
-      }
-
-      if (location && mapRef.current) {
-        mapRef.current.fitToCoordinates([location, coords], {
+  
+      const route = await fetchMapboxRoute(location, coords);
+      if (route && mapRef.current) {
+        mapRef.current.fitToCoordinates(route, {
           edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
           animated: true,
         });
       }
 
-      // Notify about emergency contacts
+      if (voiceServiceRef.current) {
+        setVoiceServiceActive(true);
+        await Notifications.scheduleNotificationAsync({
+          content: { title: '🎙️ Mic’s Hot', body: 'Shout “help” or “save me” if you’re in trouble!' },
+          trigger: null,
+        });
+      }
+
       if (emergencyContacts.length === 0) {
         await Notifications.scheduleNotificationAsync({
-          content: {
-            title: '⚠️ No Emergency Contacts',
-            body: 'Please add emergency contacts for safety',
-          },
+          content: { title: '⚠️ No Crew', body: 'Add some emergency contacts, bro!' },
           trigger: null,
         });
       }
@@ -452,15 +410,31 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
     if (voiceServiceRef.current) {
       voiceServiceRef.current.stopListening();
       setVoiceServiceActive(false);
+      Notifications.scheduleNotificationAsync({
+        content: { title: '🎙️ Mic Off', body: 'Voice monitoring stopped!' },
+        trigger: null,
+      });
+    }
+  };
+
+  const handleWebViewMessage = (event: { nativeEvent: { data: string } }) => {
+    const message = event.nativeEvent.data;
+    if (message.startsWith('trigger:')) {
+      const transcription = message.replace('trigger:', '');
+      console.log('WebView trigger detected:', transcription);
+      if (voiceServiceRef.current) {
+        voiceServiceRef.current.startFullRecording();
+      }
     }
   };
 
   const handleLogout = async () => {
     try {
+      stopVoiceService();
       navigation.navigate('Login');
     } catch (error) {
-      console.error('Logout error:', error);
-      setErrorMsg('Failed to logout');
+      console.error('Logout crashed:', error);
+      setErrorMsg('Logout failed—try again!');
     }
   };
 
@@ -469,7 +443,7 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
       <View style={styles.container}>
         <Text style={styles.errorText}>{errorMsg}</Text>
         <TouchableOpacity style={styles.button} onPress={() => setErrorMsg(null)}>
-          <Text style={styles.buttonText}>Retry</Text>
+          <Text style={styles.buttonText}>Retry, Bro!</Text>
         </TouchableOpacity>
       </View>
     );
@@ -499,41 +473,26 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
                 fillColor="rgba(0, 150, 255, 0.1)"
               />
             )}
-            
             {destination.coordinates && (
               <>
-                <Marker 
-                  coordinate={destination.coordinates} 
-                  title={destination.address} 
-                  pinColor="blue" 
-                />
-                <Polyline
-                  coordinates={[location, destination.coordinates]}
-                  strokeColor="#4a90e2"
-                  strokeWidth={3}
-                  lineDashPattern={[5, 5]}
-                />
+                <Marker coordinate={destination.coordinates} title={destination.address} pinColor="blue" />
+                <Polyline coordinates={routeCoordinates} strokeColor="#4a90e2" strokeWidth={3} />
               </>
             )}
-            
             {routeCoordinates.length > 1 && (
-              <Polyline
-                coordinates={routeCoordinates}
-                strokeColor="#000"
-                strokeWidth={3}
-              />
+              <Polyline coordinates={routeCoordinates} strokeColor="#000" strokeWidth={3} />
             )}
           </MapView>
 
           <View style={styles.headerContainer}>
-            <Text style={styles.welcomeText}>Welcome, {initialUsername}</Text>
+            <Text style={styles.welcomeText}>Yo {initialUsername}, You’re Locked In!</Text>
             <TouchableOpacity style={styles.button} onPress={handleLogout}>
-              <Text style={styles.buttonText}>Logout</Text>
+              <Text style={styles.buttonText}>Bounce Out</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Enter Destination:</Text>
+            <Text style={styles.inputLabel}>Drop Your Spot:</Text>
             <TextInput
               style={styles.input}
               placeholder="e.g., Mumbai"
@@ -541,31 +500,34 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
               onChangeText={setDestinationInput}
             />
             <TouchableOpacity style={styles.button} onPress={handleSetDestination}>
-              <Text style={styles.buttonText}>Set Destination</Text>
+              <Text style={styles.buttonText}>Lock It In</Text>
             </TouchableOpacity>
 
             {destination.coordinates && (
-              <TouchableOpacity 
-                style={[styles.button, styles.testButton]} 
-                onPress={simulateDeviation}
-              >
-                <Text style={styles.buttonText}>Test Route Deviation</Text>
+              <TouchableOpacity style={[styles.button, styles.testButton]} onPress={simulateDeviation}>
+                <Text style={styles.buttonText}>Test the Drift</Text>
               </TouchableOpacity>
             )}
 
             {voiceServiceActive && (
-              <TouchableOpacity 
-                style={[styles.button, styles.voiceStopButton]} 
-                onPress={stopVoiceService}
-              >
-                <Text style={styles.buttonText}>Stop Voice Safety</Text>
-              </TouchableOpacity>
+              <>
+                <TouchableOpacity style={[styles.button, styles.voiceStopButton]} onPress={stopVoiceService}>
+                  <Text style={styles.buttonText}>Kill Voice Mode</Text>
+                </TouchableOpacity>
+                <WebView
+                  source={{ html: speechRecognitionHtml }}
+                  style={styles.webview}
+                  onMessage={handleWebViewMessage}
+                  javaScriptEnabled={true}
+                  domStorageEnabled={true}
+                />
+              </>
             )}
 
             <Text style={styles.contactInfo}>
-              {emergencyContacts.length > 0 
-                ? `${emergencyContacts.length} emergency contacts loaded` 
-                : 'No emergency contacts found'}
+              {emergencyContacts.length > 0
+                ? `${emergencyContacts.length} homies on deck`
+                : 'No crew yet—add some!'}
             </Text>
           </View>
 
@@ -573,7 +535,7 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
         </>
       ) : (
         <View style={styles.loadingContainer}>
-          <Text>Loading location...</Text>
+          <Text>Tracking your vibe...</Text>
         </View>
       )}
     </View>
@@ -614,17 +576,12 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   inputLabel: { fontSize: 16, marginBottom: 10 },
-  input: { 
-    borderWidth: 1, 
-    borderColor: '#ddd', 
-    padding: 10, 
-    borderRadius: 5, 
-    marginBottom: 10 
-  },
-  contactInfo: { 
-    marginTop: 10, 
-    textAlign: 'center', 
-    color: '#666' 
+  input: { borderWidth: 1, borderColor: '#ddd', padding: 10, borderRadius: 5, marginBottom: 10 },
+  contactInfo: { marginTop: 10, textAlign: 'center', color: '#666' },
+  webview: {
+    width: 1,
+    height: 1,
+    opacity: 0,
   },
 });
 
