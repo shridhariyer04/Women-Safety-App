@@ -186,42 +186,43 @@ const styles = StyleSheet.create({
     padding: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#EDE7F6', // Light purple background
+    backgroundColor: '#F5F5F5', // Light gray background
   },
   title: {
     fontSize: 28,
     fontWeight: 'bold',
     marginBottom: 30,
     textAlign: 'center',
-    color: '#4A148C', // Deep purple text
+    color: '#333333', // Dark gray text
   },
   input: {
     width: '100%',
     borderWidth: 1,
-    borderColor: '#B39DDB', // Soft purple border
+    borderColor: '#E0E0E0', // Light gray border
     padding: 15,
     marginBottom: 15,
     borderRadius: 12,
     backgroundColor: 'white',
     fontSize: 16,
-    shadowColor: '#9E9E9E',
+    shadowColor: '#000',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
   },
   button: {
-    backgroundColor: '#6A1B9A', // Rich purple
+    backgroundColor: '#007AFF', // Bright blue
     paddingVertical: 15,
     paddingHorizontal: 30,
     borderRadius: 12,
     alignItems: 'center',
     marginTop: 10,
     elevation: 4,
-    shadowColor: '#4A148C',
+    shadowColor: '#007AFF',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
+    width: '100%', // Make button full width
   },
   buttonDisabled: {
     backgroundColor: '#999',
@@ -239,7 +240,7 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   switchText: {
-    color: '#6A1B9A',
+    color: '#007AFF', // Match button color
     fontSize: 16,
     fontWeight: '500',
     textDecorationLine: 'underline',

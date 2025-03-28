@@ -27,6 +27,13 @@ const HIGH_QUALITY_RECORDING_OPTIONS: Audio.RecordingOptions = {
 };
 
 const RECORDING_DURATION = 15000; // 15 seconds
+const DEBOUNCE_DELAY = 16000; // 16 seconds to cover recording + buffer
+
+interface Coordinates {
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+}
 
 export interface EmergencyContact {
   id: string;
@@ -38,6 +45,7 @@ export class VoiceService {
   private recording: Audio.Recording | null = null;
   private emergencyContacts: EmergencyContact[] = [];
   private isRecording: boolean = false;
+  private lastRecordingTime: number = 0; // Debounce tracker
 
   constructor(contacts: EmergencyContact[]) {
     this.emergencyContacts = contacts;
@@ -74,25 +82,32 @@ export class VoiceService {
 
   stopListening(): void {
     console.log('Stopped listening');
+    this.stopAndCleanupRecording();
   }
 
   private async stopAndCleanupRecording(): Promise<void> {
     if (!this.recording) return;
 
     try {
-      if (await this.recording.getStatusAsync().then(status => status.isRecording)) {
+      const status = await this.recording.getStatusAsync();
+      if (status.isRecording) {
         await this.recording.stopAndUnloadAsync();
+        console.log('Recording stopped during cleanup');
       }
       this.recording = null;
       this.isRecording = false;
     } catch (error) {
       console.error('Error cleaning up recording:', error);
+    } finally {
+      this.recording = null; // Force reset
+      this.isRecording = false;
     }
   }
 
-  public async startFullRecording(): Promise<void> {
-    if (this.isRecording) {
-      console.log('Already recording');
+  public async startFullRecording(location?: Coordinates): Promise<void> {
+    const now = Date.now();
+    if (this.isRecording || (now - this.lastRecordingTime < DEBOUNCE_DELAY)) {
+      console.log('Recording in progress or debounced');
       return;
     }
 
@@ -104,17 +119,18 @@ export class VoiceService {
 
     try {
       console.log('Starting full recording process');
-      await this.stopAndCleanupRecording();
+      await this.stopAndCleanupRecording(); // Hard reset
       this.recording = new Audio.Recording();
       console.log('Preparing recording');
       await this.recording.prepareToRecordAsync(HIGH_QUALITY_RECORDING_OPTIONS);
       console.log('Starting recording');
       await this.recording.startAsync();
       this.isRecording = true;
+      this.lastRecordingTime = now;
 
       setTimeout(async () => {
         console.log('Recording timeout triggered');
-        await this.stopRecordingAndSend();
+        await this.stopRecordingAndSend(location);
       }, RECORDING_DURATION);
     } catch (error) {
       console.error('Error starting full recording:', error);
@@ -122,8 +138,8 @@ export class VoiceService {
     }
   }
 
-  private async stopRecordingAndSend(): Promise<void> {
-    if (!this.recording) {
+  private async stopRecordingAndSend(location?: Coordinates): Promise<void> {
+    if (!this.recording || !this.isRecording) {
       console.log('No active recording to stop');
       return;
     }
@@ -139,7 +155,7 @@ export class VoiceService {
         const publicUrl = await this.uploadToSupabase(uri);
         if (publicUrl) {
           console.log('Sending audio to contacts');
-          await this.sendAudioToContacts(publicUrl);
+          await this.sendAudioToContacts(publicUrl, location);
         } else {
           console.error('Upload failed, no public URL');
         }
@@ -149,8 +165,7 @@ export class VoiceService {
     } catch (error) {
       console.error('Error stopping recording:', error);
     } finally {
-      this.recording = null;
-      this.isRecording = false;
+      await this.stopAndCleanupRecording(); // Ensure cleanup
     }
   }
 
@@ -210,13 +225,13 @@ export class VoiceService {
     }
   }
 
-  private async sendAudioToContacts(audioUrl: string): Promise<void> {
+  private async sendAudioToContacts(audioUrl: string, location?: Coordinates): Promise<void> {
     if (this.emergencyContacts.length === 0) {
       console.error('No emergency contacts');
       return;
     }
 
-    const message = `EMERGENCY: Voice alert triggered. Audio: ${audioUrl}`;
+    const message = `EMERGENCY: Voice alert triggered. Audio: ${audioUrl}${location ? ` - Location: https://www.openstreetmap.org/?mlat=${location.latitude}&mlon=${location.longitude}` : ''}`;
     const phoneNumbers = this.emergencyContacts.map(contact => contact.phone_number);
 
     try {

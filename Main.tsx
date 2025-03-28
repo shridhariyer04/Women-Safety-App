@@ -7,12 +7,13 @@ import {
   TouchableOpacity,
   Platform,
   PermissionsAndroid,
+  FlatList,
 } from 'react-native';
 import MapView, { Marker, Polyline, Circle } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as SMS from 'expo-sms';
 import * as Notifications from 'expo-notifications';
-import { WebView } from 'react-native-webview'; // Correct import
+import { WebView } from 'react-native-webview';
 import { distance } from '@turf/turf';
 import { StatusBar } from 'expo-status-bar';
 import { getEmergencyContacts, EmergencyContact } from './src/services/SupabaseService';
@@ -34,25 +35,34 @@ interface MainAppProps {
   navigation: { navigate: (screen: string) => void };
 }
 
+interface Suggestion {
+  id: string;
+  place_name: string;
+  center: [number, number]; // [longitude, latitude]
+}
+
 const MAPBOX_API_KEY = 'pk.eyJ1Ijoic2hyZWVwYXdhbiIsImEiOiJjbHR4M2RlOWIwMXN2MmtwajMyaGxncnIxIn0.7tHp71unIQLe0cs_Azj4eQ';
 const ROUTE_DEVIATION_THRESHOLD = 500; // 500 meters
 const RESPONSE_TIMEOUT = 30000; // 30 secs
 const NOTIFICATION_COOLDOWN = 60000; // 1 min
 
 const speechRecognitionHtml = `
-  <!DOCTYPE html>
+ <!DOCTYPE html>
   <html>
   <body>
     <script>
       const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
       recognition.continuous = true;
-      recognition.interimResults = false;
+      recognition.interimResults = true; // Catch partial results
       recognition.lang = 'en-US';
 
       recognition.onresult = (event) => {
-        const transcript = event.results[event.results.length - 1][0].transcript.toLowerCase();
-        if (transcript.includes('help') || transcript.includes('save me')) {
-          window.ReactNativeWebView.postMessage('trigger:' + transcript);
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript.toLowerCase();
+          if (transcript.includes('help') || transcript.includes('save me')) {
+            window.ReactNativeWebView.postMessage('trigger:' + transcript);
+            break; // Fire once per match
+          }
         }
       };
 
@@ -75,6 +85,7 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [destination, setDestination] = useState<LocationState>({ coordinates: null, address: '' });
   const [destinationInput, setDestinationInput] = useState<string>('');
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [routeCoordinates, setRouteCoordinates] = useState<Coordinates[]>([]);
   const [emergencyContacts, setEmergencyContacts] = useState<EmergencyContact[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -106,6 +117,45 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
     } catch (error) {
       console.error('Mapbox route error:', error);
       setErrorMsg('Route fetch failed—check your connection!');
+      return null;
+    }
+  };
+
+  const fetchAddressSuggestions = async (query: string) => {
+    if (query.length < 3 || !location) {
+      setSuggestions([]);
+      return;
+    }
+  
+    try {
+      const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAPBOX_API_KEY}&proximity=${location.longitude},${location.latitude}&country=IN&limit=5`;
+      const response = await fetch(url);
+      const data = await response.json();
+      if (data.features) {
+        setSuggestions(data.features);
+      } else {
+        setSuggestions([]);
+      }
+    } catch (error) {
+      console.error('Mapbox autocomplete failed:', error);
+      setSuggestions([]);
+    }
+  };
+
+  const geocodeDestination = async (address: string): Promise<Coordinates | null> => {
+    try {
+      const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?access_token=${MAPBOX_API_KEY}&country=IN&limit=1${location ? `&proximity=${location.longitude},${location.latitude}` : ''}`;
+      const response = await fetch(url);
+      const data = await response.json();
+      if (data.features && data.features.length > 0) {
+        const [longitude, latitude] = data.features[0].center;
+        return { latitude, longitude };
+      }
+      setErrorMsg('Destination not found in India—try again!');
+      return null;
+    } catch (error) {
+      console.error('Mapbox geocoding bombed:', error);
+      setErrorMsg('Geocoding failed—check your input!');
       return null;
     }
   };
@@ -172,7 +222,7 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
         shouldSetBadge: true,
       }),
     });
-
+  
     if (Platform.OS === 'android') {
       await Notifications.setNotificationChannelAsync('route-deviation', {
         name: 'Route Deviation Alerts',
@@ -182,9 +232,12 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
         lightColor: '#FF231F7C',
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
         bypassDnd: true,
+        showBadge: true, // Show on app icon
+        enableLights: true, // Flash LED
+        enableVibrate: true, // Buzz hard
       });
     }
-
+  
     await Notifications.setNotificationCategoryAsync('route-deviation', [
       { identifier: 'SEND_ALERT', buttonTitle: 'Send Alert', options: { isDestructive: true } },
       { identifier: 'IM_SAFE', buttonTitle: "I'm Safe", options: { isDestructive: false } },
@@ -269,11 +322,11 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
       });
       return;
     }
-
+  
     try {
       const destinationName = destination.address || 'unknown spot';
-      const message = `EMERGENCY: ${initialUsername} might be in trouble near ${destinationName}. Location: https://www.openstreetmap.org/?mlat=${currentLocation.latitude}&mlon=${currentLocation.longitude}${audioUrl ? ` - Voice clip: ${audioUrl}` : ''}`;
-
+      const message = `EMERGENCY: ${initialUsername} might be in trouble near ${destinationName}. Current Location: https://www.openstreetmap.org/?mlat=${currentLocation.latitude}&mlon=${currentLocation.longitude}${audioUrl ? ` - Voice clip: ${audioUrl}` : ''}`;
+  
       const phoneNumbers = emergencyContacts.map((contact) => contact.phone_number);
       const isAvailable = await SMS.isAvailableAsync();
       if (isAvailable) {
@@ -300,7 +353,7 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
   const showDeviationNotification = async (currentLocation: Coordinates) => {
     try {
       if (responseTimer.current) clearTimeout(responseTimer.current);
-
+  
       await Notifications.scheduleNotificationAsync({
         content: {
           title: '❗ Off the Path!',
@@ -308,10 +361,13 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
           data: { currentLocation },
           categoryIdentifier: 'route-deviation',
           sound: 'default',
+          priority: Notifications.AndroidNotificationPriority.HIGH, // Heads-up on Android
+          sticky: false, // Auto-dismiss after interaction
+          autoDismiss: true,
         },
         trigger: null,
       });
-
+  
       responseTimer.current = setTimeout(async () => {
         if (responseTimer.current) {
           await sendEmergencyAlert(currentLocation);
@@ -327,6 +383,7 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
     }
   };
 
+  
   const checkRouteDeviation = (currentLocation: Coordinates): void => {
     if (!destination.coordinates) return;
 
@@ -356,30 +413,16 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
     if (destination.coordinates) checkRouteDeviation(deviatedLocation);
   };
 
-  const geocodeDestination = async (address: string): Promise<Coordinates | null> => {
-    try {
-      const results = await Location.geocodeAsync(address);
-      if (results.length > 0) {
-        return { latitude: results[0].latitude, longitude: results[0].longitude };
-      }
-      setErrorMsg('Destination not found—try again!');
-      return null;
-    } catch (error) {
-      console.error('Geocoding bombed:', error);
-      setErrorMsg('Geocoding failed—check your input!');
-      return null;
-    }
-  };
-
   const handleSetDestination = async () => {
     if (!destinationInput.trim()) {
       setErrorMsg('Yo, drop a destination first!');
       return;
     }
-
+  
     const coords = await geocodeDestination(destinationInput);
     if (coords && location) {
       setDestination({ coordinates: coords, address: destinationInput });
+      setSuggestions([]); // Clear suggestions
   
       const route = await fetchMapboxRoute(location, coords);
       if (route && mapRef.current) {
@@ -388,7 +431,7 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
           animated: true,
         });
       }
-
+  
       if (voiceServiceRef.current) {
         setVoiceServiceActive(true);
         await Notifications.scheduleNotificationAsync({
@@ -396,13 +439,25 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
           trigger: null,
         });
       }
-
+  
       if (emergencyContacts.length === 0) {
         await Notifications.scheduleNotificationAsync({
           content: { title: '⚠️ No Crew', body: 'Add some emergency contacts, bro!' },
           trigger: null,
         });
       }
+    }
+  };
+
+  const handleSuggestionSelect = (suggestion: Suggestion) => {
+    setDestinationInput(suggestion.place_name);
+    setDestination({
+      coordinates: { latitude: suggestion.center[1], longitude: suggestion.center[0] },
+      address: suggestion.place_name,
+    });
+    setSuggestions([]);
+    if (location) {
+      fetchMapboxRoute(location, { latitude: suggestion.center[1], longitude: suggestion.center[0] });
     }
   };
 
@@ -422,8 +477,8 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
     if (message.startsWith('trigger:')) {
       const transcription = message.replace('trigger:', '');
       console.log('WebView trigger detected:', transcription);
-      if (voiceServiceRef.current) {
-        voiceServiceRef.current.startFullRecording();
+      if (voiceServiceRef.current && location) {
+        voiceServiceRef.current.startFullRecording(location); // Pass current location
       }
     }
   };
@@ -495,10 +550,28 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
             <Text style={styles.inputLabel}>Drop Your Spot:</Text>
             <TextInput
               style={styles.input}
-              placeholder="e.g., Mumbai"
+              placeholder="e.g., 123 Main St, Mumbai"
               value={destinationInput}
-              onChangeText={setDestinationInput}
+              onChangeText={(text) => {
+                setDestinationInput(text);
+                fetchAddressSuggestions(text);
+              }}
             />
+            {suggestions.length > 0 && (
+              <FlatList
+                data={suggestions}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.suggestionItem}
+                    onPress={() => handleSuggestionSelect(item)}
+                  >
+                    <Text>{item.place_name}</Text>
+                  </TouchableOpacity>
+                )}
+                style={styles.suggestionList}
+              />
+            )}
             <TouchableOpacity style={styles.button} onPress={handleSetDestination}>
               <Text style={styles.buttonText}>Lock It In</Text>
             </TouchableOpacity>
@@ -543,41 +616,126 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  map: { flex: 1 },
-  errorText: { color: 'red', textAlign: 'center', marginTop: 50 },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  container: { 
+    flex: 1, 
+    backgroundColor: '#F5F5F5',
+  },
+  map: { 
+    flex: 1,
+    borderRadius: 15, 
+    overflow: 'hidden',
+  },
+  errorText: { 
+    color: '#007AFF', 
+    textAlign: 'center', 
+    marginTop: 50,
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  loadingContainer: { 
+    flex: 1, 
+    justifyContent: 'center', 
+    alignItems: 'center',
+    backgroundColor: '#F5F5F5',
+  },
   headerContainer: {
     position: 'absolute',
     top: 40,
-    left: 10,
-    right: 10,
+    left: 15,
+    right: 15,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: 'white',
-    padding: 10,
-    borderRadius: 10,
+    padding: 15,
+    borderRadius: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
     elevation: 5,
   },
-  welcomeText: { fontSize: 16, fontWeight: 'bold' },
-  button: { backgroundColor: '#007AFF', padding: 10, borderRadius: 5, marginVertical: 5 },
-  testButton: { backgroundColor: '#FF6B6B', marginTop: 10 },
-  voiceStopButton: { backgroundColor: '#FF6B6B', marginTop: 10 },
-  buttonText: { color: 'white', fontWeight: 'bold' },
+  welcomeText: { 
+    fontSize: 16, 
+    fontWeight: '600',
+    color: '#333333',
+  },
+  button: { 
+    backgroundColor: '#007AFF', 
+    padding: 12, 
+    borderRadius: 10, 
+    alignItems: 'center',
+    minWidth: 100,
+    shadowColor: '#007AFF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  testButton: { 
+    backgroundColor: '#4A4A4A', 
+    marginTop: 10,
+  },
+  voiceStopButton: { 
+    backgroundColor: '#4A4A4A', 
+    marginTop: 10,
+  },
+  buttonText: { 
+    color: 'white', 
+    fontWeight: '700',
+    fontSize: 14,
+  },
   inputContainer: {
     position: 'absolute',
-    top: 100,
-    left: 10,
-    right: 10,
+    bottom: 20,
+    left: 15,
+    right: 15,
     backgroundColor: 'white',
-    padding: 15,
-    borderRadius: 10,
+    padding: 20,
+    borderRadius: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
     elevation: 5,
   },
-  inputLabel: { fontSize: 16, marginBottom: 10 },
-  input: { borderWidth: 1, borderColor: '#ddd', padding: 10, borderRadius: 5, marginBottom: 10 },
-  contactInfo: { marginTop: 10, textAlign: 'center', color: '#666' },
+  inputLabel: { 
+    fontSize: 16, 
+    marginBottom: 10,
+    color: '#333333',
+    fontWeight: '600',
+  },
+  input: { 
+    borderWidth: 1, 
+    borderColor: '#E0E0E0', 
+    padding: 12, 
+    borderRadius: 10, 
+    marginBottom: 10,
+    backgroundColor: '#F5F5F5',
+    fontSize: 14,
+  },
+  suggestionList: {
+    maxHeight: 150,
+    backgroundColor: 'white',
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    marginBottom: 10,
+  },
+  suggestionItem: {
+    padding: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  contactInfo: { 
+    marginTop: 10, 
+    textAlign: 'center', 
+    color: '#4A4A4A',
+    fontSize: 12,
+  },
   webview: {
     width: 1,
     height: 1,
