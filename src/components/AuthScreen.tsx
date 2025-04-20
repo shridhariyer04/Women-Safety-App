@@ -44,6 +44,7 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ onAuthSuccess }) => {
         if (user?.id) {
           setUserId(user.id);
           setShowEmergencyForm(true);
+          // Don't set loading to false as we're transitioning to the next screen
         } else {
           throw new Error('User ID not found after signup');
         }
@@ -56,20 +57,42 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ onAuthSuccess }) => {
   };
 
   const handleEmergencyContactsComplete = () => {
+    // Reset loading state when emergency contacts are saved
+    setLoading(false);
+    
+    // Show success message
     Alert.alert(
       'Success',
-      'Account created successfully!',
+      'Account and emergency contacts created successfully!',
       [
         {
           text: 'OK',
           onPress: () => {
-            // Reset form and show login
-            setShowEmergencyForm(false);
-            setIsLogin(true);
+            // Sign in the user with the newly created account
+            signIn(email, password)
+              .then(({ user, profile, error }) => {
+                if (error) {
+                  Alert.alert('Error', 'Failed to sign in after registration');
+                  setIsLogin(true);
+                  setShowEmergencyForm(false);
+                } else if (profile?.username) {
+                  // Navigate to main app
+                  onAuthSuccess(profile.username);
+                }
+              })
+              .catch(error => {
+                console.error('Sign in after registration error:', error);
+                Alert.alert('Error', 'Failed to sign in after registration');
+                setIsLogin(true);
+                setShowEmergencyForm(false);
+              });
+            
+            // Reset form state
             setEmail('');
             setPassword('');
             setUsername('');
-            setLoading(false);
+            setUserId('');
+            setShowEmergencyForm(false);
           }
         }
       ]
@@ -110,6 +133,17 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ onAuthSuccess }) => {
 
     handleAuth();
   };
+
+  // If showing emergency form, render that instead of login/signup
+  if (showEmergencyForm) {
+    return (
+      <EmergencyContactsForm 
+        userId={userId} 
+        userName={username} 
+        onComplete={handleEmergencyContactsComplete} 
+      />
+    );
+  }
 
   return (
     <View style={styles.container}>

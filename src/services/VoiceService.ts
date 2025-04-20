@@ -181,18 +181,18 @@ export class VoiceService {
         return null;
       }
 
-      console.log('Uploading to Supabase');
+      console.log('Reading file content');
       const fileContent = await FileSystem.readAsStringAsync(audioUri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
+      console.log('Uploading to Supabase');
       const { data, error } = await supabase.storage
         .from('recordings')
         .upload(fileName, {
-          uri: audioUri,
-          name: fileName,
-          type: 'audio/m4a',
-        } as any, {
+          data: fileContent,
+          contentType: 'audio/m4a',
+        }, {
           contentType: 'audio/m4a',
           upsert: true,
         });

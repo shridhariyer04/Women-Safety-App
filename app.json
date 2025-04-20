@@ -6,6 +6,13 @@
         {
           "locationAlwaysAndWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#ffffff"
+        }
       ]
     ],
     "android": {
@@ -13,13 +20,17 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "SEND_SMS",
-        "RECORD_AUDIO"
+        "RECORD_AUDIO",
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "ios": {
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "This app needs access to location to track your route.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs access to location to track your route even when in background."
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs access to location to track your route even when in background.",
+        "UIBackgroundModes": ["location", "audio"],
+        "NSMicrophoneUsageDescription": "This app needs access to your microphone for voice-triggered recording.",
+        "NSUserNotificationUsageDescription": "This app needs to send notifications for safety alerts."
       }
     }
   }
