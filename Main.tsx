@@ -540,14 +540,14 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
           </MapView>
 
           <View style={styles.headerContainer}>
-            <Text style={styles.welcomeText}>Yo {initialUsername}, You’re Locked In!</Text>
+            <Text style={styles.welcomeText}>Yo {initialUsername}, Where to? </Text>
             <TouchableOpacity style={styles.button} onPress={handleLogout}>
-              <Text style={styles.buttonText}>Bounce Out</Text>
+              <Text style={styles.buttonText}>Logout</Text>
             </TouchableOpacity>
           </View>
 
           <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Drop Your Spot:</Text>
+            <Text style={styles.inputLabel}>Enter your destination</Text>
             <TextInput
               style={styles.input}
               placeholder="e.g., 123 Main St, Mumbai"
@@ -573,12 +573,12 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
               />
             )}
             <TouchableOpacity style={styles.button} onPress={handleSetDestination}>
-              <Text style={styles.buttonText}>Lock It In</Text>
+              <Text style={styles.buttonText}>Start journey</Text>
             </TouchableOpacity>
 
             {destination.coordinates && (
               <TouchableOpacity style={[styles.button, styles.testButton]} onPress={simulateDeviation}>
-                <Text style={styles.buttonText}>Test the Drift</Text>
+                <Text style={styles.buttonText}>Test Deviation</Text>
               </TouchableOpacity>
             )}
 
@@ -599,8 +599,8 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
 
             <Text style={styles.contactInfo}>
               {emergencyContacts.length > 0
-                ? `${emergencyContacts.length} homies on deck`
-                : 'No crew yet—add some!'}
+                ? `${emergencyContacts.length} Emergency Contact Available`
+                : 'No Emergency Contact!'}
             </Text>
           </View>
 
@@ -608,7 +608,7 @@ const MainApp: React.FC<MainAppProps> = ({ initialUsername, navigation }) => {
         </>
       ) : (
         <View style={styles.loadingContainer}>
-          <Text>Tracking your vibe...</Text>
+          <Text>Tracking your vibe...🚗</Text>
         </View>
       )}
     </View>
